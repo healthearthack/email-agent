@@ -1,12 +1,13 @@
 """
-MetAKNews Autonomous Email Intelligence Agent (Human-in-the-Loop Edition)
+MetAKNews Autonomous Email Intelligence Agent (Production HITL Edition)
 Brand Identity: Met = Meteorologist, AK = Andrew Kieckhefer, News = Knowledge Engine
 
 Integrations:
-- Gemini 2.5 AI Reasoning Engine
+- Gemini 3.6 Flash Reasoning Engine
 - Salesforce OAuth 2.0 Connected App (andy.my.salesforce.com)
 - HubSpot API v3 Contact & Open Tracking
 - Human-in-the-Loop (HITL) Biometric Draft & Review Guardrails
+- Smart Inbound Spam & Notification Filter
 """
 
 import os
@@ -32,6 +33,7 @@ EMAIL_PASS = os.getenv("GMAIL_APP_PASSWORD", "")  # 16-character App Password
 
 # AI Engine
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
 # Salesforce OAuth 2.0 Connected App Credentials
 SF_DOMAIN = os.getenv("SF_DOMAIN", "").rstrip("/")
@@ -39,17 +41,18 @@ SF_CLIENT_ID = os.getenv("SF_CLIENT_ID", "")
 SF_CLIENT_SECRET = os.getenv("SF_CLIENT_SECRET", "")
 SF_USERNAME = os.getenv("SF_USERNAME", "")
 SF_PASSWORD = os.getenv("SF_PASSWORD", "")
+SF_SECURITY_TOKEN = os.getenv("SF_SECURITY_TOKEN", "")
 
 # HubSpot Integration
 HUBSPOT_TOKEN = os.getenv("HUBSPOT_ACCESS_TOKEN", "")
 HUBSPOT_PORTAL_ID = os.getenv("HUBSPOT_PORTAL_ID", "")
 
 # 🛡️ GUARDRAIL CONFIGURATION
-# Set to True to deposit responses into Gmail 'Drafts' for biometric/TouchID review on your device.
-# Set to False to run interactive CLI biometric approval before sending.
 DRAFT_ONLY_MODE = os.getenv("DRAFT_ONLY_MODE", "True").lower() in ("true", "1", "yes")
+POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "15"))
 
-POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_SECONDS", "15"))
+# Optional whitelist (set to a list like ["your-email@gmail.com"] if you only want to test with specific senders)
+ALLOWED_SENDERS = ["noreply@github.com" , "aws-cs-sales-form@support.aws.com"]  # Empty means all non-automated senders are processed
 
 # Initialize Gemini Client
 ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
@@ -86,35 +89,42 @@ ANDYS_KNOWLEDGE_BASE = """
 """
 
 # ==============================================================================
-# ☁️ SALESFORCE OAUTH 2.0 HANDSHAKE (No Security Token Needed)
+# ☁️ SALESFORCE OAUTH 2.0 HANDSHAKE
 # ==============================================================================
 
 def get_salesforce_client():
-    """Authenticates with Salesforce using Connected App OAuth 2.0 Client Credentials / Password flow."""
+    """Authenticates with Salesforce using Connected App OAuth 2.0."""
     if not SF_CLIENT_ID or not SF_CLIENT_SECRET or not SF_USERNAME or not SF_PASSWORD:
         return None
 
     token_url = f"{SF_DOMAIN}/services/oauth2/token"
+    
+    # Append security token if available (handles Salesforce IP security restrictions)
+    full_password = f"{SF_PASSWORD}{SF_SECURITY_TOKEN}" if SF_SECURITY_TOKEN else SF_PASSWORD
+
     payload = {
         "grant_type": "password",
         "client_id": SF_CLIENT_ID,
         "client_secret": SF_CLIENT_SECRET,
         "username": SF_USERNAME,
-        "password": SF_PASSWORD
+        "password": full_password
     }
 
     try:
         res = requests.post(token_url, data=payload, timeout=10)
         if res.status_code == 200:
             token_data = res.json()
-            access_token = token_data["access_token"]
-            instance_url = token_data["instance_url"]
-            return Salesforce(instance_url=instance_url, session_id=access_token)
+            return Salesforce(instance_url=token_data["instance_url"], session_id=token_data["access_token"])
         else:
-            print(f"⚠️ Salesforce OAuth token error ({res.status_code}): {res.text}")
-            return None
+            # Fallback to direct simple_salesforce login
+            return Salesforce(
+                username=SF_USERNAME,
+                password=SF_PASSWORD,
+                security_token=SF_SECURITY_TOKEN,
+                domain='login' if 'my.salesforce.com' in SF_DOMAIN else SF_DOMAIN
+            )
     except Exception as e:
-        print(f"❌ Salesforce OAuth connection failed: {e}")
+        print(f"ℹ️ Salesforce auth note: {e}")
         return None
 
 def sync_to_salesforce(first_name: str, last_name: str, email_addr: str, inquiry: str):
@@ -134,7 +144,7 @@ def sync_to_salesforce(first_name: str, last_name: str, email_addr: str, inquiry
                 'Company': 'MetAKNews Inbound',
                 'Email': email_addr,
                 'LeadSource': 'MetAKNews Inbound',
-                'Description': f"Inbound inquiry to metaknews@gmail.com:\n{inquiry}",
+                'Description': f"Inbound inquiry to metaknews@gmail.com:\n{inquiry[:1000]}",
                 'Status': 'Open - Not Contacted'
             }
             created = sf.Lead.create(lead_data)
@@ -142,7 +152,7 @@ def sync_to_salesforce(first_name: str, last_name: str, email_addr: str, inquiry
         else:
             lead_id = res['records'][0]['Id']
             sf.Lead.update(lead_id, {
-                'Description': f"Latest MetAKNews Inquiry:\n{inquiry}"
+                'Description': f"Latest MetAKNews Inquiry:\n{inquiry[:1000]}"
             })
             print(f"✅ Salesforce: Updated existing Lead {lead_id}")
     except Exception as e:
@@ -182,6 +192,78 @@ def get_tracking_pixel(email_addr: str) -> str:
     if not HUBSPOT_PORTAL_ID:
         return ""
     return f'<img src="https://track.hubspot.com/__ptq.gif?k=1&sd=1&portalId={HUBSPOT_PORTAL_ID}&email={email_addr}" width="1" height="1" style="display:none;" />'
+
+# ==============================================================================
+# 🔍 EMAIL PARSER & AUTOMATED SENDER FILTER
+# ==============================================================================
+
+BOT_PATTERNS = [
+    "noreply", "no-reply", "support@", "newsletter", "giving@", "donotreply",
+    "mailer-daemon", "aws-cs-sales-form", "notifications@", "billing@", "updates@"
+]
+
+def is_automated_or_spam(from_email: str, msg: email.message.Message) -> bool:
+    """Detects bot notifications, automated receipts, and bulk newsletters."""
+    from_lower = from_email.lower()
+    
+    # 1. Ignore self
+    if from_lower == EMAIL_USER.lower():
+        return True
+        
+    # 2. Check bot address patterns
+    if any(pattern in from_lower for pattern in BOT_PATTERNS):
+        return True
+
+    # 3. Check email headers for auto-generated messages
+    auto_submitted = msg.get("Auto-Submitted", "").lower()
+    if auto_submitted and auto_submitted != "no":
+        return True
+
+    # 4. Check precedence / bulk headers
+    precedence = msg.get("Precedence", "").lower()
+    if precedence in ("bulk", "list", "junk", "auto_reply"):
+        return True
+
+    return False
+
+def clean_subject(header_val):
+    if not header_val:
+        return "Newsletter Request"
+    decoded_list = decode_header(header_val)
+    subject_parts = []
+    for decoded, encoding in decoded_list:
+        if isinstance(decoded, bytes):
+            subject_parts.append(decoded.decode(encoding or "utf-8", errors="ignore"))
+        else:
+            subject_parts.append(str(decoded))
+    return " ".join(subject_parts).strip()
+
+def get_email_body(msg):
+    body = ""
+    if msg.is_multipart():
+        for part in msg.walk():
+            ctype = part.get_content_type()
+            cdispo = str(part.get("Content-Disposition"))
+            if ctype == "text/plain" and "attachment" not in cdispo:
+                payload = part.get_payload(decode=True)
+                if payload:
+                    body += payload.decode(errors="ignore")
+    else:
+        payload = msg.get_payload(decode=True)
+        if payload:
+            body = payload.decode(errors="ignore")
+    return body.strip()
+
+def parse_sender_name(from_header):
+    real_name, email_addr = email.utils.parseaddr(from_header)
+    first_name = "There"
+    last_name = ""
+    if real_name:
+        parts = real_name.split()
+        first_name = parts[0]
+        if len(parts) > 1:
+            last_name = " ".join(parts[1:])
+    return first_name, last_name, email_addr
 
 # ==============================================================================
 # 🎨 HTML NEWSLETTER FORMATTER
@@ -233,10 +315,7 @@ def render_newsletter(markdown_body: str, recipient_email: str) -> str:
 # ==============================================================================
 
 def save_as_gmail_draft(to_email: str, subject: str, md_content: str, html_content: str, msg_id: str):
-    """
-    Deposits the email into metaknews@gmail.com's Drafts folder.
-    Andy opens Gmail with FaceID/TouchID/Passkey to review and send.
-    """
+    """Deposits the email into metaknews@gmail.com's Drafts folder for biometric review."""
     mail = imaplib.IMAP4_SSL("imap.gmail.com")
     mail.login(EMAIL_USER, EMAIL_PASS)
 
@@ -253,43 +332,10 @@ def save_as_gmail_draft(to_email: str, subject: str, md_content: str, html_conte
     msg.attach(MIMEText(md_content, "plain"))
     msg.attach(MIMEText(html_content, "html"))
 
-    # Gmail Drafts IMAP folder
-    draft_folder = "[Gmail]/Drafts"
-    mail.append(draft_folder, "\\Draft", imaplib.Time2Internaldate(time.time()), msg.as_bytes())
+    mail.append("[Gmail]/Drafts", "\\Draft", imaplib.Time2Internaldate(time.time()), msg.as_bytes())
     mail.logout()
-    print(f"🛡️ [HITL GUARDRAIL] Response saved to GMAIL DRAFTS for {to_email}.")
-    print(f"👉 Review and send with your fingerprint/biometric authentication in the Gmail app.")
-
-def biometric_cli_confirm(to_email: str, subject: str, md_content: str) -> bool:
-    """CLI approval prompt before sending via SMTP."""
-    print("\n" + "=" * 60)
-    print(f"🛡️  HUMAN-IN-THE-LOOP REVIEW REQUIRED")
-    print(f"To: {to_email} | Subject: {subject}")
-    print("-" * 60)
-    print(md_content[:400] + "\n... [truncated] ...")
-    print("=" * 60)
-    
-    choice = input("👉 Enter 'Y' to authorize with your biometric key & send (or 'N' to skip): ").strip().upper()
-    return choice == 'Y'
-
-def send_via_smtp(to_email: str, subject: str, md_content: str, html_content: str, msg_id: str):
-    """Sends the approved email via SMTP."""
-    reply_subject = subject if subject.lower().startswith("re:") else f"MetAKNews // {subject}"
-    msg = MIMEMultipart("alternative")
-    msg["From"] = f"MetAKNews <{EMAIL_USER}>"
-    msg["To"] = to_email
-    msg["Subject"] = reply_subject
-    if msg_id:
-        msg["In-Reply-To"] = msg_id
-        msg["References"] = msg_id
-
-    msg.attach(MIMEText(md_content, "plain"))
-    msg.attach(MIMEText(html_content, "html"))
-
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-        smtp.login(EMAIL_USER, EMAIL_PASS)
-        smtp.sendmail(EMAIL_USER, [to_email], msg.as_string())
-    print(f"🚀 Dispatched email to {to_email}")
+    print(f"🛡️ [HITL GUARDRAIL] Draft ready in Gmail for {to_email}.")
+    print(f"👉 Review on your device with biometric / TouchID authentication to send.")
 
 # ==============================================================================
 # 🔄 MAIN LOOP
@@ -313,62 +359,51 @@ def process_inbox():
 
         raw_msg = email.message_from_bytes(data[0][1])
         real_name, sender_email = email.utils.parseaddr(raw_msg.get("From", ""))
-        subject = raw_msg.get("Subject", "Newsletter Request")
+        subject = clean_subject(raw_msg.get("Subject"))
         msg_id = raw_msg.get("Message-ID")
 
-        if sender_email.lower() == EMAIL_USER.lower() or "no-reply" in sender_email.lower():
+        # 1. Filter out automated bots, receipts, newsletters
+        if is_automated_or_spam(sender_email, raw_msg):
+            print(f"🔇 Skipping automated/notification email from: {sender_email}")
             continue
 
-        first_name = real_name.split()[0] if real_name else "There"
-        last_name = " ".join(real_name.split()[1:]) if real_name and len(real_name.split()) > 1 else ""
-        
-        # Extract body
-        body = ""
-        if raw_msg.is_multipart():
-            for part in raw_msg.walk():
-                if part.get_content_type() == "text/plain" and "attachment" not in str(part.get("Content-Disposition")):
-                    payload = part.get_payload(decode=True)
-                    if payload:
-                        body += payload.decode(errors="ignore")
-        else:
-            payload = raw_msg.get_payload(decode=True)
-            if payload:
-                body = payload.decode(errors="ignore")
+        # 2. Check whitelist (if configured)
+        if ALLOWED_SENDERS and sender_email not in ALLOWED_SENDERS:
+            print(f"🔒 Senders whitelist active, skipping: {sender_email}")
+            continue
 
-        print(f"\n⚡ Inbound from {first_name} {last_name} <{sender_email}>: '{subject}'")
+        first_name, last_name, _ = parse_sender_name(raw_msg.get("From", ""))
+        body = get_email_body(raw_msg)
+        inquiry_text = body if body else "Requesting Andy's latest updates and resources."
 
-        # 1. Sync CRMs
-        sync_to_hubspot(first_name, last_name, sender_email, body)
-        sync_to_salesforce(first_name, last_name, sender_email, body)
+        print(f"\n⚡ Verified human inbound from {first_name} <{sender_email}>: '{subject}'")
 
-        # 2. AI Reasoning
-        print("🧠 Synthesizing MetAKNews response with Gemini 2.5...")
+        # 3. Sync CRMs
+        sync_to_hubspot(first_name, last_name, sender_email, inquiry_text)
+        sync_to_salesforce(first_name, last_name, sender_email, inquiry_text)
+
+        # 4. AI Reasoning with Gemini 3.6 Flash
+        print(f"🧠 Synthesizing MetAKNews response with {GEMINI_MODEL}...")
         prompt = f"""
-Recipient: {first_name}
+Recipient First Name: {first_name}
 Subject: {subject}
-Inbound Note: {body}
+Message Received: {inquiry_text}
 
-Knowledge Base:
+Andy's Knowledge Base:
 {ANDYS_KNOWLEDGE_BASE}
 
-Generate a personalized MetAKNews email response according to system instructions.
+Generate a personalized MetAKNews email response according to your system instructions.
 """
         response = ai_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model=GEMINI_MODEL,
             contents=[prompt],
             config={"system_instruction": SYSTEM_PROMPT}
         )
         md_response = response.text
         html_response = render_newsletter(md_response, sender_email)
 
-        # 3. Guardrail Enforcement
-        if DRAFT_ONLY_MODE:
-            save_as_gmail_draft(sender_email, subject, md_response, html_response, msg_id)
-        else:
-            if biometric_cli_confirm(sender_email, subject, md_response):
-                send_via_smtp(sender_email, subject, md_response, html_response, msg_id)
-            else:
-                print(f"❌ Skipped sending response to {sender_email}.")
+        # 5. Guardrail (Gmail Drafts)
+        save_as_gmail_draft(sender_email, subject, md_response, html_response, msg_id)
 
     mail.close()
     mail.logout()
@@ -377,8 +412,9 @@ if __name__ == "__main__":
     print("=" * 65)
     print("🌤️  MetAKNews Intelligence Agent [HITL Biometric Edition]")
     print(f"📧 Ingestion Inbox: {EMAIL_USER}")
+    print(f"🤖 Model: {GEMINI_MODEL}")
     print(f"🔒 Salesforce OAuth Connected App: {SF_DOMAIN}")
-    print(f"🛡️  Guardrail Mode: {'GMAIL DRAFTS (Biometric Review on Device)' if DRAFT_ONLY_MODE else 'CLI PROMPT'}")
+    print(f"🛡️  Guardrail: GMAIL DRAFTS (Biometric Review on Device)")
     print("=" * 65)
     
     while True:
