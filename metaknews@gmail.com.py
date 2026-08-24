@@ -10,6 +10,7 @@ Integrations:
 - Smart Inbound Spam & Notification Filter
 """
 
+import random
 import os
 import time
 import imaplib
@@ -341,6 +342,43 @@ def save_as_gmail_draft(to_email: str, subject: str, md_content: str, html_conte
 # MAIN LOOP
 # ==============================================================================
 
+def generate_gemini_response(prompt, max_attempts=5):
+    """Generate a Gemini response with retries for temporary service failures."""
+
+    if ai_client is None:
+        raise RuntimeError("GEMINI_API_KEY is not configured.")
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = ai_client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=[prompt],
+                config={"system_instruction": SYSTEM_PROMPT}
+            )
+            return response.text
+
+        except Exception as exc:
+            message = str(exc)
+
+            temporary_failure = (
+                "503" in message
+                or "UNAVAILABLE" in message
+                or "high demand" in message.lower()
+            )
+
+            if not temporary_failure or attempt == max_attempts:
+                raise
+
+            delay = min(60, (2 ** attempt) + random.uniform(0, 1))
+
+            print(
+                f"Gemini temporarily unavailable. "
+                f"Retry {attempt}/{max_attempts} in {delay:.1f} seconds."
+            )
+
+            time.sleep(delay)
+
+
 def process_inbox():
     mail = imaplib.IMAP4_SSL("imap.gmail.com")
     mail.login(EMAIL_USER, GMAIL_APP_PASSWORD)
@@ -383,8 +421,10 @@ def process_inbox():
         sync_to_salesforce(first_name, last_name, sender_email, inquiry_text)
 
         # 4. AI Reasoning with configured Gemini model
+
         print(f"Synthesizing MetAKNews response with {GEMINI_MODEL}...")
         prompt = f"""
+
 Recipient First Name: {first_name}
 Subject: {subject}
 Message Received: {inquiry_text}
@@ -394,12 +434,8 @@ Andy's Knowledge Base:
 
 Generate a personalized MetAKNews email response according to your system instructions.
 """
-        response = ai_client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=[prompt],
-            config={"system_instruction": SYSTEM_PROMPT}
-        )
-        md_response = response.text
+        md_response = generate_gemini_response(prompt)
+
         html_response = render_newsletter(md_response, sender_email)
 
         # 5. Guardrail (Gmail Drafts)
