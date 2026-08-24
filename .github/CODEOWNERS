@@ -1,0 +1,11 @@
+# Default maintainer review
+* @healthearthack
+
+# Security-sensitive runtime and automation
+.github/workflows/ @healthearthack
+*.py @healthearthack
+requirements.txt @healthearthack
+
+# Contribution policy
+CONTRIBUTING.md @healthearthack
+README.md @healthearthack
