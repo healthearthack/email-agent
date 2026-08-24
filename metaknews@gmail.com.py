@@ -24,12 +24,12 @@ from google import genai
 from simple_salesforce import Salesforce
 
 # ==============================================================================
-# ⚙️ CONFIGURATION & CREDENTIALS
+# CONFIGURATION & CREDENTIALS
 # ==============================================================================
 
 # Gmail Settings
-EMAIL_USER = os.getenv("GMAIL_USER", "metaknews@gmail.com")
-EMAIL_PASS = os.getenv("GMAIL_APP_PASSWORD", "")  # 16-character App Password
+EMAIL_USER = os.getenv("GMAIL_USER", "")
+GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "")  # 16-character App Password
 
 # AI Engine
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -47,7 +47,7 @@ SF_SECURITY_TOKEN = os.getenv("SF_SECURITY_TOKEN", "")
 HUBSPOT_TOKEN = os.getenv("HUBSPOT_ACCESS_TOKEN", "")
 HUBSPOT_PORTAL_ID = os.getenv("HUBSPOT_PORTAL_ID", "")
 
-# 🛡️ GUARDRAIL CONFIGURATION
+# GUARDRAIL CONFIGURATION
 DRAFT_ONLY_MODE = os.getenv("DRAFT_ONLY_MODE", "True").lower() in ("true", "1", "yes")
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "15"))
 
@@ -58,16 +58,16 @@ ALLOWED_SENDERS = []  # Empty means all non-automated senders are processed
 ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 # ==============================================================================
-# 🧠 ANDY'S KNOWLEDGE BASE & SYSTEM INSTRUCTIONS
+# ANDY'S KNOWLEDGE BASE & SYSTEM INSTRUCTIONS
 # ==============================================================================
 
 SYSTEM_PROMPT = """
-You are MetAKNews — the official intelligence & newsletter agent for Andrew (Andy) Kieckhefer (Meteorologist & Technologist).
+You are MetAKNews the official intelligence & newsletter agent for Andrew (Andy) Kieckhefer (Meteorologist & Technologist).
 Brand Identity: Met = Meteorologist, AK = Andrew Kieckhefer, News = News & Knowledge Engine.
 
 Your core mission in every email dispatch is to deliver value around two anchor pillars:
-1. 🚀 "What Andy is Working On" (Atmospheric data pipelines, machine learning forecasting models, radar/satellite autonomous systems).
-2. 📦 "What Resources Andy Has For You" (Open-source weather stacks, NetCDF/GRIB2 toolkits, consulting/advisory availability).
+1. "What Andy is Working On" (Atmospheric data pipelines, machine learning forecasting models, radar/satellite autonomous systems).
+2. "What Resources Andy Has For You" (Open-source weather stacks, NetCDF/GRIB2 toolkits, consulting/advisory availability).
 
 Guidelines:
 - Address the sender's specific inquiry directly and with domain expertise.
@@ -89,7 +89,7 @@ ANDYS_KNOWLEDGE_BASE = """
 """
 
 # ==============================================================================
-# ☁️ SALESFORCE OAUTH 2.0 HANDSHAKE
+# SALESFORCE OAUTH 2.0 HANDSHAKE
 # ==============================================================================
 
 def get_salesforce_client():
@@ -124,7 +124,7 @@ def get_salesforce_client():
                 domain='login' if 'my.salesforce.com' in SF_DOMAIN else SF_DOMAIN
             )
     except Exception as e:
-        print(f"ℹ️ Salesforce auth note: {e}")
+        print(f"Salesforce auth note: {e}")
         return None
 
 def sync_to_salesforce(first_name: str, last_name: str, email_addr: str, inquiry: str):
@@ -144,22 +144,22 @@ def sync_to_salesforce(first_name: str, last_name: str, email_addr: str, inquiry
                 'Company': 'MetAKNews Inbound',
                 'Email': email_addr,
                 'LeadSource': 'MetAKNews Inbound',
-                'Description': f"Inbound inquiry to metaknews@gmail.com:\n{inquiry[:1000]}",
+                'Description': f"Inbound inquiry to {EMAIL_USER}:\n{inquiry[:1000]}",
                 'Status': 'Open - Not Contacted'
             }
             created = sf.Lead.create(lead_data)
-            print(f"✅ Salesforce: Created Lead ID {created.get('id')}")
+            print(f"Salesforce: Created Lead ID {created.get('id')}")
         else:
             lead_id = res['records'][0]['Id']
             sf.Lead.update(lead_id, {
                 'Description': f"Latest MetAKNews Inquiry:\n{inquiry[:1000]}"
             })
-            print(f"✅ Salesforce: Updated existing Lead {lead_id}")
+            print(f"Salesforce: Updated existing Lead {lead_id}")
     except Exception as e:
-        print(f"❌ Salesforce sync error: {e}")
+        print(f"Salesforce sync error: {e}")
 
 # ==============================================================================
-# 📊 HUBSPOT SYNC & TRACKING
+# HUBSPOT SYNC & TRACKING
 # ==============================================================================
 
 def sync_to_hubspot(first_name: str, last_name: str, email_addr: str, inquiry: str):
@@ -184,9 +184,9 @@ def sync_to_hubspot(first_name: str, last_name: str, email_addr: str, inquiry: s
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=10)
         if res.status_code in (200, 201, 409):
-            print(f"✅ HubSpot: Contact synced ({email_addr})")
+            print(f"HubSpot: Contact synced ({email_addr})")
     except Exception as e:
-        print(f"❌ HubSpot sync error: {e}")
+        print(f"HubSpot sync error: {e}")
 
 def get_tracking_pixel(email_addr: str) -> str:
     if not HUBSPOT_PORTAL_ID:
@@ -194,7 +194,7 @@ def get_tracking_pixel(email_addr: str) -> str:
     return f'<img src="https://track.hubspot.com/__ptq.gif?k=1&sd=1&portalId={HUBSPOT_PORTAL_ID}&email={email_addr}" width="1" height="1" style="display:none;" />'
 
 # ==============================================================================
-# 🔍 EMAIL PARSER & AUTOMATED SENDER FILTER
+# EMAIL PARSER & AUTOMATED SENDER FILTER
 # ==============================================================================
 
 BOT_PATTERNS = [
@@ -266,7 +266,7 @@ def parse_sender_name(from_header):
     return first_name, last_name, email_addr
 
 # ==============================================================================
-# 🎨 HTML NEWSLETTER FORMATTER
+# HTML NEWSLETTER FORMATTER
 # ==============================================================================
 
 def render_newsletter(markdown_body: str, recipient_email: str) -> str:
@@ -302,7 +302,7 @@ def render_newsletter(markdown_body: str, recipient_email: str) -> str:
             {html_content}
           </div>
           <div class="footer">
-            <p>&copy; MetAKNews // Andy Kieckhefer &bull; metaknews@gmail.com</p>
+            <p>&copy; MetAKNews // Andy Kieckhefer &bull; {EMAIL_USER}</p>
             {pixel}
           </div>
         </div>
@@ -311,13 +311,13 @@ def render_newsletter(markdown_body: str, recipient_email: str) -> str:
     """
 
 # ==============================================================================
-# 🛡️ HUMAN-IN-THE-LOOP (HITL) GUARDRAIL HANDLERS
+# HUMAN-IN-THE-LOOP (HITL) GUARDRAIL HANDLERS
 # ==============================================================================
 
 def save_as_gmail_draft(to_email: str, subject: str, md_content: str, html_content: str, msg_id: str):
-    """Deposits the email into metaknews@gmail.com's Drafts folder for biometric review."""
+    """Deposits the email into the configured Gmail account's Drafts folder for biometric review."""
     mail = imaplib.IMAP4_SSL("imap.gmail.com")
-    mail.login(EMAIL_USER, EMAIL_PASS)
+    mail.login(EMAIL_USER, GMAIL_APP_PASSWORD)
 
     reply_subject = subject if subject.lower().startswith("re:") else f"MetAKNews // {subject}"
 
@@ -334,16 +334,16 @@ def save_as_gmail_draft(to_email: str, subject: str, md_content: str, html_conte
 
     mail.append("[Gmail]/Drafts", "\\Draft", imaplib.Time2Internaldate(time.time()), msg.as_bytes())
     mail.logout()
-    print(f"🛡️ [HITL GUARDRAIL] Draft ready in Gmail for {to_email}.")
-    print(f"👉 Review on your device with biometric / TouchID authentication to send.")
+    print(f"[HITL GUARDRAIL] Draft ready in Gmail for {to_email}.")
+    print(f"Review on your device with biometric / TouchID authentication to send.")
 
 # ==============================================================================
-# 🔄 MAIN LOOP
+# MAIN LOOP
 # ==============================================================================
 
 def process_inbox():
     mail = imaplib.IMAP4_SSL("imap.gmail.com")
-    mail.login(EMAIL_USER, EMAIL_PASS)
+    mail.login(EMAIL_USER, GMAIL_APP_PASSWORD)
     mail.select("inbox")
 
     status, messages = mail.search(None, 'UNSEEN')
@@ -364,26 +364,26 @@ def process_inbox():
 
         # 1. Filter out automated bots, receipts, newsletters
         if is_automated_or_spam(sender_email, raw_msg):
-            print(f"🔇 Skipping automated/notification email from: {sender_email}")
+            print(f"Skipping automated/notification email from: {sender_email}")
             continue
 
         # 2. Check whitelist (if configured)
         if ALLOWED_SENDERS and sender_email not in ALLOWED_SENDERS:
-            print(f"🔒 Senders whitelist active, skipping: {sender_email}")
+            print(f"Senders whitelist active, skipping: {sender_email}")
             continue
 
         first_name, last_name, _ = parse_sender_name(raw_msg.get("From", ""))
         body = get_email_body(raw_msg)
         inquiry_text = body if body else "Requesting Andy's latest updates and resources."
 
-        print(f"\n⚡ Verified human inbound from {first_name} <{sender_email}>: '{subject}'")
+        print(f"\nVerified human inbound from {first_name} <{sender_email}>: '{subject}'")
 
         # 3. Sync CRMs
         sync_to_hubspot(first_name, last_name, sender_email, inquiry_text)
         sync_to_salesforce(first_name, last_name, sender_email, inquiry_text)
 
         # 4. AI Reasoning with configured Gemini model
-        print(f"🧠 Synthesizing MetAKNews response with {GEMINI_MODEL}...")
+        print(f"Synthesizing MetAKNews response with {GEMINI_MODEL}...")
         prompt = f"""
 Recipient First Name: {first_name}
 Subject: {subject}
@@ -409,16 +409,16 @@ Generate a personalized MetAKNews email response according to your system instru
     mail.logout()
 
 if __name__ == "__main__":
-    if not EMAIL_PASS:
+    if not GMAIL_APP_PASSWORD:
         raise RuntimeError("GMAIL_APP_PASSWORD is not configured.")
     if not GEMINI_API_KEY or ai_client is None:
         raise RuntimeError("GEMINI_API_KEY is not configured.")
     print("=" * 65)
-    print("🌤️  MetAKNews Intelligence Agent [HITL Biometric Edition]")
-    print(f"📧 Ingestion Inbox: {EMAIL_USER}")
-    print(f"🤖 Model: {GEMINI_MODEL}")
-    print(f"🔒 Salesforce OAuth Connected App: {SF_DOMAIN}")
-    print(f"🛡️  Guardrail: GMAIL DRAFTS (Biometric Review on Device)")
+    print("MetAKNews Intelligence Agent [HITL Biometric Edition]")
+    print(f"Ingestion Inbox: {EMAIL_USER}")
+    print(f"Model: {GEMINI_MODEL}")
+    print(f"Salesforce OAuth Connected App: {SF_DOMAIN}")
+    print(f"Guardrail: GMAIL DRAFTS (Biometric Review on Device)")
     print("=" * 65)
     
     RUN_ONCE = os.getenv("RUN_ONCE", "False").lower() in ("true", "1", "yes")
@@ -436,3 +436,4 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"[Loop Exception] {e}")
             time.sleep(POLL_INTERVAL)
+
