@@ -1,0 +1,41 @@
+name: Gmail AI Draft Agent
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    - cron: "0 14 * * *"
+    - cron: "0 19 * * *"
+    - cron: "0 0 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  process-inbox:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install google-genai markdown requests simple-salesforce
+
+      - name: Run Gmail AI draft agent
+        env:
+          GMAIL_USER: metaknews@gmail.com
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: gemini-3.6-flash
+          DRAFT_ONLY_MODE: "True"
+          RUN_ONCE: "True"
+        run: python "metaknews@gmail.com.py"

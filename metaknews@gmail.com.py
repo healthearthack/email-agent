@@ -33,7 +33,7 @@ EMAIL_PASS = os.getenv("GMAIL_APP_PASSWORD", "")  # 16-character App Password
 
 # AI Engine
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
 # Salesforce OAuth 2.0 Connected App Credentials
 SF_DOMAIN = os.getenv("SF_DOMAIN", "").rstrip("/")
@@ -421,13 +421,18 @@ if __name__ == "__main__":
     print(f"🛡️  Guardrail: GMAIL DRAFTS (Biometric Review on Device)")
     print("=" * 65)
     
-    while True:
+    RUN_ONCE = os.getenv("RUN_ONCE", "False").lower() in ("true", "1", "yes")
+
+    if RUN_ONCE:
         try:
             process_inbox()
         except Exception as e:
-            print(f"[Loop Exception] {e}")
-        time.sleep(POLL_INTERVAL)
-
-
-
-
+            print(f"[Run Exception] {e}")
+            raise
+    else:
+        while True:
+            try:
+                process_inbox()
+            except Exception as e:
+                print(f"[Loop Exception] {e}")
+            time.sleep(POLL_INTERVAL)
