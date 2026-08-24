@@ -11,12 +11,12 @@ Integrations:
 """
 
 import random
+import re
 import os
 import time
 import imaplib
 import email
 from email.header import decode_header
-import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import requests
@@ -199,8 +199,9 @@ def get_tracking_pixel(email_addr: str) -> str:
 # ==============================================================================
 
 BOT_PATTERNS = [
-    "noreply", "no-reply", "support@", "newsletter", "giving@", "donotreply",
-    "mailer-daemon", "aws-cs-sales-form", "notifications@", "billing@", "updates@"
+    "noreply", "no-reply", "donotreply", "mailer-daemon",
+    "newsletter", "notifications", "notification", "billing",
+    "updates", "receipts", "alerts", "automated", "automatic"
 ]
 
 def is_automated_or_spam(from_email: str, msg: email.message.Message) -> bool:
@@ -211,16 +212,22 @@ def is_automated_or_spam(from_email: str, msg: email.message.Message) -> bool:
     if from_lower == EMAIL_USER.lower():
         return True
         
-    # 2. Check bot address patterns
+    # 2. Check automated mailbox/domain patterns. This intentionally catches
+    # addresses such as usbank@notifications.example.com as well as no-reply@.
     if any(pattern in from_lower for pattern in BOT_PATTERNS):
         return True
 
-    # 3. Check email headers for auto-generated messages
+    # 3. Mailing-list headers are a strong signal that this is not a
+    # person-to-person message requiring an AI-generated reply.
+    if msg.get("List-Unsubscribe") or msg.get("List-Id"):
+        return True
+
+    # 4. Check email headers for auto-generated messages
     auto_submitted = msg.get("Auto-Submitted", "").lower()
     if auto_submitted and auto_submitted != "no":
         return True
 
-    # 4. Check precedence / bulk headers
+    # 5. Check precedence / bulk headers
     precedence = msg.get("Precedence", "").lower()
     if precedence in ("bulk", "list", "junk", "auto_reply"):
         return True
@@ -342,6 +349,10 @@ def save_as_gmail_draft(to_email: str, subject: str, md_content: str, html_conte
 # MAIN LOOP
 # ==============================================================================
 
+class GeminiQuotaExhausted(RuntimeError):
+    """Raised when Gemini refuses generation because the configured quota is exhausted."""
+
+
 def generate_gemini_response(prompt, max_attempts=5):
     """Generate a Gemini response with retries for temporary service failures."""
 
@@ -359,11 +370,20 @@ def generate_gemini_response(prompt, max_attempts=5):
 
         except Exception as exc:
             message = str(exc)
+            message_lower = message.lower()
+
+            # The Google GenAI client already retries transport-level 429 errors.
+            # If quota exhaustion still reaches us, abort this inbox pass cleanly
+            # rather than failing the entire scheduled workflow or burning more quota.
+            if "429" in message or "resource_exhausted" in message_lower or "quota exceeded" in message_lower:
+                retry_match = re.search(r"retry in ([0-9.]+)s", message_lower)
+                retry_hint = f" Suggested retry: {retry_match.group(1)} seconds." if retry_match else ""
+                raise GeminiQuotaExhausted(f"Gemini quota exhausted.{retry_hint}") from exc
 
             temporary_failure = (
                 "503" in message
-                or "UNAVAILABLE" in message
-                or "high demand" in message.lower()
+                or "unavailable" in message_lower
+                or "high demand" in message_lower
             )
 
             if not temporary_failure or attempt == max_attempts:
@@ -391,7 +411,9 @@ def process_inbox():
         return
 
     for num in messages[0].split():
-        status, data = mail.fetch(num, "(RFC822)")
+        # PEEK prevents merely inspecting a message from marking it as read.
+        # We mark it Seen only after a draft is successfully created.
+        status, data = mail.fetch(num, "(BODY.PEEK[])")
         if status != "OK":
             continue
 
@@ -434,21 +456,33 @@ Andy's Knowledge Base:
 
 Generate a personalized MetAKNews email response according to your system instructions.
 """
-        md_response = generate_gemini_response(prompt)
+        try:
+            md_response = generate_gemini_response(prompt)
+        except GeminiQuotaExhausted as exc:
+            print(f"[QUOTA] {exc} Ending this inbox pass; message remains unread for a later run.")
+            break
 
         html_response = render_newsletter(md_response, sender_email)
 
         # 5. Guardrail (Gmail Drafts)
         save_as_gmail_draft(sender_email, subject, md_response, html_response, msg_id)
 
+        # Successful draft creation is the commit point for this inbound message.
+        # Mark it read only now so failures can be retried on a later scheduled run.
+        mail.store(num, "+FLAGS", "\\Seen")
+
     mail.close()
     mail.logout()
 
 if __name__ == "__main__":
+    if not EMAIL_USER:
+        raise RuntimeError("GMAIL_USER is not configured.")
     if not GMAIL_APP_PASSWORD:
         raise RuntimeError("GMAIL_APP_PASSWORD is not configured.")
     if not GEMINI_API_KEY or ai_client is None:
         raise RuntimeError("GEMINI_API_KEY is not configured.")
+    if not DRAFT_ONLY_MODE:
+        raise RuntimeError("DRAFT_ONLY_MODE must remain enabled; automatic sending is not implemented.")
     print("=" * 65)
     print("MetAKNews Intelligence Agent [HITL Biometric Edition]")
     print(f"Ingestion Inbox: {EMAIL_USER}")

@@ -1,0 +1,4 @@
+google-genai>=1.0,<2
+Markdown>=3.7,<4
+requests>=2.32,<3
+simple-salesforce>=1.12,<2
