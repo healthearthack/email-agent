@@ -33,7 +33,7 @@ EMAIL_PASS = os.getenv("GMAIL_APP_PASSWORD", "")  # 16-character App Password
 
 # AI Engine
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 # Salesforce OAuth 2.0 Connected App Credentials
 SF_DOMAIN = os.getenv("SF_DOMAIN", "").rstrip("/")
@@ -52,7 +52,7 @@ DRAFT_ONLY_MODE = os.getenv("DRAFT_ONLY_MODE", "True").lower() in ("true", "1", 
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "15"))
 
 # Optional whitelist (set to a list like ["your-email@gmail.com"] if you only want to test with specific senders)
-ALLOWED_SENDERS = ["noreply@github.com" , "aws-cs-sales-form@support.aws.com"]  # Empty means all non-automated senders are processed
+ALLOWED_SENDERS = []  # Empty means all non-automated senders are processed
 
 # Initialize Gemini Client
 ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
@@ -382,7 +382,7 @@ def process_inbox():
         sync_to_hubspot(first_name, last_name, sender_email, inquiry_text)
         sync_to_salesforce(first_name, last_name, sender_email, inquiry_text)
 
-        # 4. AI Reasoning with Gemini 3.6 Flash
+        # 4. AI Reasoning with configured Gemini model
         print(f"🧠 Synthesizing MetAKNews response with {GEMINI_MODEL}...")
         prompt = f"""
 Recipient First Name: {first_name}
@@ -409,6 +409,10 @@ Generate a personalized MetAKNews email response according to your system instru
     mail.logout()
 
 if __name__ == "__main__":
+    if not EMAIL_PASS:
+        raise RuntimeError("GMAIL_APP_PASSWORD is not configured.")
+    if not GEMINI_API_KEY or ai_client is None:
+        raise RuntimeError("GEMINI_API_KEY is not configured.")
     print("=" * 65)
     print("🌤️  MetAKNews Intelligence Agent [HITL Biometric Edition]")
     print(f"📧 Ingestion Inbox: {EMAIL_USER}")
@@ -423,3 +427,7 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"[Loop Exception] {e}")
         time.sleep(POLL_INTERVAL)
+
+
+
+
