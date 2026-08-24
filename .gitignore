@@ -5,3 +5,19 @@ __pycache__/
 *.pyc
 credentials.json
 token.json
+
+# Local Python artifacts
+__pycache__/
+*.py[cod]
+*.bak
+.venv/
+
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Google credentials / tokens
+credentials.json
+token.json
+client_secret*.json

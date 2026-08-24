@@ -10,8 +10,8 @@ import markdown
 from google import genai
 
 # --- Configuration ---
-EMAIL_USER = "metaknews@gmail.com"
-EMAIL_PASS = os.getenv("GMAIL_APP_PASSWORD", "your-16-char-app-password")
+EMAIL_USER = os.getenv("GMAIL_USER", "")
+GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "your-gemini-api-key")
 ALLOWED_SENDERS = ["your-personal-email@gmail.com"]  # Security whitelist
 
@@ -101,12 +101,12 @@ def send_reply(to_email, original_subject, body_markdown, original_msg_id):
     msg.attach(MIMEText(styled_html, "html"))
 
     with smtplib.SMTP_SSL(SMTP_SERVER, 465) as server:
-        server.login(EMAIL_USER, EMAIL_PASS)
+        server.login(EMAIL_USER, GMAIL_APP_PASSWORD)
         server.sendmail(EMAIL_USER, [to_email], msg.as_string())
 
 def poll_inbox():
     mail = imaplib.IMAP4_SSL(IMAP_SERVER)
-    mail.login(EMAIL_USER, EMAIL_PASS)
+    mail.login(EMAIL_USER, GMAIL_APP_PASSWORD)
     mail.select("inbox")
 
     status, messages = mail.search(None, 'UNSEEN')
@@ -127,28 +127,30 @@ def poll_inbox():
         subject = clean_subject(msg.get("Subject"))
         msg_id = msg.get("Message-ID")
 
-        print(f"📩 New email from {sender}: '{subject}'")
+        print(f"New email from {sender}: '{subject}'")
 
         # Sender check
         if ALLOWED_SENDERS and sender not in ALLOWED_SENDERS:
-            print(f"⚠️ Skipping email from unauthorized sender: {sender}")
+            print(f" Skipping email from unauthorized sender: {sender}")
             continue
 
         body = get_email_body(msg)
-        print("🧠 Thinking & generating response...")
+        print("Thinking & generating response...")
         reply_md = generate_agent_response(subject, body, sender)
 
-        print(f"✉️ Sending reply to {sender}...")
+        print(f" Sending reply to {sender}...")
         send_reply(sender, subject, reply_md, msg_id)
 
     mail.close()
     mail.logout()
 
 if __name__ == "__main__":
-    print("🚀 MetaKNews Email Agent started. Polling inbox...")
+    print("MetaKNews Email Agent started. Polling inbox...")
     while True:
         try:
             poll_inbox()
         except Exception as e:
             print(f"Error in poll loop: {e}")
         time.sleep(15)  # Poll every 15 seconds
+
+

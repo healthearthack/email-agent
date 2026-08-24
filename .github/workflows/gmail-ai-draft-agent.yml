@@ -4,9 +4,7 @@ on:
   workflow_dispatch:
 
   schedule:
-    - cron: "0 14 * * *"
-    - cron: "0 19 * * *"
-    - cron: "0 0 * * *"
+    - cron: "*/15 * * * *"
 
 permissions:
   contents: read
@@ -32,7 +30,7 @@ jobs:
 
       - name: Run Gmail AI draft agent
         env:
-          GMAIL_USER: metaknews@gmail.com
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: gemini-3.6-flash
